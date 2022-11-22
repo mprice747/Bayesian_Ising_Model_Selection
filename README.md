@@ -5,7 +5,7 @@ To see examples from paper, make sure to run simulation data in the beginning of
 <br>
 Originally final project for Rice University's STAT 648 - Graphical Models and Networks
 <br>
-##Authors:
+## Authors:
 <br>
 Michael Price 
 <br>
