@@ -1,0 +1,457 @@
+---
+title: "STAT 648 Project"
+author: "Michael Price"
+date: "4/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(qgraph)
+library(IsingSampler)
+library(IsingFit)
+library(MASS)
+library(glmnet)
+library(mvtnorm)
+```
+
+
+
+```{r}
+vec_to_sym_matrix <- function(vec){
+  
+  # Helper function that inputs a vector and transforms into a symmetric matrix,  
+  # where the vector's elements  will be in the upper and lower triangular parts of the matrix
+  # Vector must have length n(n + 1)/2 where n >= 1
+  
+  c_quad <- 2 *length(vec)
+  matrix_size <- (-1 + sqrt(1 + 4 * c_quad))/2 + 1
+
+  sym_matrix <- matrix(0, nrow = matrix_size, ncol = matrix_size)
+  sym_matrix[lower.tri(sym_matrix, diag=FALSE)] <- vec
+  
+  sym_matrix <- sym_matrix + t(sym_matrix)
+  
+  
+  return(sym_matrix)
+  
+}
+
+
+```
+
+
+```{r}
+
+# Initialize with variable size 6
+thresh_6 <- c(-1.5, 1.2, 1.8, -2, 1.1, -0.9)
+
+inter_6 <- matrix(0, nrow = 6, ncol = 6)
+
+inter_6[1, 2] <- 2
+inter_6[2, 1] <- 2
+
+inter_6[2, 3] <- -2
+inter_6[3, 2] <- -2
+
+inter_6[1, 3] <- 3
+inter_6[3, 1] <- 3
+
+inter_6[4, 5] <- 2
+inter_6[5, 4] <- 2
+
+inter_6[5, 6] <- -2
+inter_6[6, 5] <- -2
+
+inter_6[6, 4] <- 3
+inter_6[4, 6] <- 3
+
+Ising_6 <- IsingSampler(400, inter_6, thresh_6)
+
+
+
+Ising_fit_6 <- IsingFit(Ising_6, plot = FALSE)
+
+qgraph(inter_6 )
+```
+
+
+```{r}
+
+# Initalize Ring like Ising model
+set.seed(110)
+thresh_20 <- rnorm(0, 1, 15)
+
+inter_20 <- matrix(0, nrow = 15, ncol = 15)
+
+
+for (k in 1:14){
+  
+  new_samp <- sample(c(-2, 2), 1)
+  
+  inter_20[k, k + 1] <- new_samp
+  inter_20[k + 1, k] <- new_samp
+  
+}
+
+final_samp <- sample(c(-2, 2), 1)
+
+inter_20[1, 15] <- final_samp
+inter_20[15, 1] <- final_samp
+
+Ising_20 <- IsingSampler(400, inter_20, thresh_20)
+
+
+#Ising_fit_20 <- IsingFit(Ising_20)
+
+qgraph(inter_20)
+
+
+
+```
+
+```{r}
+
+
+pseudolike_ising_mh <- function(Ising_data, sim_number = 100000,  prop_cov_scalar = 0.01,
+                                burnin = 0.5, normal_prior_cov = sqrt(2)){
+  
+  # Metropolis Posterior Sampling Algorithm for the Ising Model. For the likleihood, 
+  # uses the pseudolikelihood instead of computing the normalizing constant, and both the 
+  # proposal and prior densities are multivariate normal distributions. 
+  
+  # Inputs: 
+  #   Ising_data - a n X m Dataframe representing samples from an Ising model. Elements must be either 1 or 0
+  #   sim_number - Number of iterations for Metropolis Algorithm
+  #   prop_cov_scalar - constant to be multiplied to identity covariance matrix of the proposal distribution
+  #   burnin - Burnin period for Metropolis algorithm. burnin * sim_number will be the number of samples discarded
+  #   normal_prior_cov - constant to be multiplied to identity covariance matrix of the prior distribution
+  
+  # Outputs
+    # A list of the sampled thresholds and interaction terms 
+  
+  num_threshs <- ncol(Ising_data)
+  
+  num_interactions <- (ncol(Ising_data) * (ncol(Ising_data) - 1))/2
+  
+  # First guess will be estimate from IsingFit function
+  
+  ising_std_fit <- IsingFit(Ising_data, plot = FALSE)
+  
+  # Initialize current guesses 
+  current_thresh <- ising_std_fit$thresholds
+
+  current_inter_matrix <- ising_std_fit$weiadj
+  
+  current_interaction <- t(current_inter_matrix)[lower.tri(t(current_inter_matrix))]
+  
+  thresh_matrix  <- matrix(0, nrow = sim_number, ncol = num_threshs)
+  inter_matrix <- matrix(0, nrow = sim_number, ncol = num_interactions)
+  
+  
+  burnin_num <- round(burnin * sim_number) + 1
+  
+  
+  for (s in 1:sim_number){
+    
+    
+    if (s == burnin_num){
+      
+      accept_count <- 0
+    }
+    
+    if (s %% 1000 == 0){
+      print(s)
+    }
+    
+    # Sample from proposal distrubtion
+    proposal_dist_thresh <- mvrnorm(1, current_thresh, prop_cov_scalar* diag(num_threshs))
+    proposal_dist_inter <- mvrnorm(1, current_interaction, prop_cov_scalar * diag(num_interactions))
+    
+    # Get pseudolikelihood and prior likelihood of proposed sample
+    
+    prior_prop_thresh <- dmvnorm(proposal_dist_thresh, 
+                                sigma = normal_prior_cov * diag(num_threshs), log = TRUE)
+    prior_prop_inter <- dmvnorm(proposal_dist_inter, 
+                               sigma = normal_prior_cov * diag(num_interactions), log = TRUE)
+  
+    
+    
+    pseudo_prop <-  IsingPL(Ising_data, vec_to_sym_matrix(proposal_dist_inter), 
+                          proposal_dist_thresh, beta = 1)
+  
+    if (is.nan(pseudo_prop) == TRUE){
+      
+      pseudo_prop = -Inf
+    }
+    
+    # Get pseudolikelihood and prior likelihood of old sample
+    
+    prior_old_thresh <- dmvnorm(current_thresh, 
+                                sigma = normal_prior_cov * diag(num_threshs), log = TRUE)
+    prior_old_inter <- dmvnorm(current_interaction, 
+                               sigma = normal_prior_cov * diag(num_interactions), log = TRUE)
+    
+    
+    
+    
+    pseudo_old <-  IsingPL(Ising_data, vec_to_sym_matrix(current_interaction), 
+                         current_thresh, beta = 1)
+  
+    if (is.nan(pseudo_old) == TRUE){
+      
+      pseudo_old = -Inf
+    }
+  
+  # Calculate log acceptance 
+    log_acceptance <- (pseudo_prop + prior_prop_thresh + prior_prop_inter) - (pseudo_old + prior_old_inter + prior_old_thresh)
+  
+    if (is.nan(log_acceptance) == TRUE | is.na(log_acceptance) == TRUE ){
+      
+      log_acceptance = log(0.5)
+    }
+    
+  r <- exp(min(log_acceptance, 0))
+  
+  # Update samples if passes threshold
+  if (runif(1) < r){
+    
+    thresh_matrix[s, ] <- proposal_dist_thresh
+    inter_matrix[s, ] <- proposal_dist_inter
+    
+    current_thresh <- proposal_dist_thresh
+    current_interaction <- proposal_dist_inter
+    
+    if (s >=  burnin_num){
+      
+      accept_count <- accept_count + 1
+      
+    }
+    
+  }
+  
+  else{
+    
+    thresh_matrix[s, ] <- current_thresh
+    inter_matrix[s, ] <- current_interaction
+    
+  }
+    
+  }
+  
+  print(paste0("The acceptance probability was ", accept_count/burnin_num))
+  
+  # Return final samples 
+  final_thresh <- thresh_matrix[burnin_num:sim_number, ]
+  final_inter <- inter_matrix[burnin_num:sim_number, ]
+  
+  
+  return(list(threshold_posterior = final_thresh, interaction_posterior = final_inter))
+  
+  
+}
+
+
+# Get posterior samples for Ising_6 and Ising_20
+
+post_1 <- pseudolike_ising_mh(Ising_6, prop_cov_scalar = 0.01^1.4, normal_prior_cov = sqrt(3))
+
+post_2 <- pseudolike_ising_mh(Ising_20, prop_cov_scalar = 0.01^1.6, normal_prior_cov = sqrt(3))
+
+
+post_thresh_mean <- colMeans(post_1$threshold_posterior)
+post_inter_mean <- vec_to_sym_matrix(colMeans(post_1$interaction_posterior))
+
+
+post_thresh_mean_2 <- colMeans(post_2$threshold_posterior)
+post_inter_mean_2 <- vec_to_sym_matrix(colMeans(post_2$interaction_posterior))
+
+
+
+
+
+```
+
+```{r}
+plot(1:50000, post_2$interaction_posterior[, 10], type = "l", col = "blue", 
+     main = "MCMC for Interaction (Real Value Nonzero)", xlab = "Simulation Index", 
+     ylab = "Sampled Value")
+```
+
+
+
+
+
+```{r}
+
+get_post_lr_probs <- function(x, thresh_mean, inter_mean){
+  
+  # Helper function to calculated weights for weighted logistic regression
+  
+  dot_prod <- thresh_mean + (x %*% inter_mean)[1, 1]
+  
+  prob_final <- exp(dot_prod)/(1 + exp(dot_prod))
+  
+  return(prob_final)
+}
+
+
+
+get_ising_model <- function(Ising_data, post_inter_mean, post_thresh_mean, gamma = 0.25, rule = "and"){
+  
+  # Given posterior means of a Bayesian Model select model for posterior summarization using 
+  # Hahn and Cavarlho's technique and Extended Bayesian Information Criterion
+  
+  # Inputs: 
+    # Ising_data - Ising_data - a n X m Dataframe representing samples from an Ising model. Elements must be either 1 or 0
+    # post_inter_mean - matrix of the posterior mean of the interaction parameters
+    # post_thresh_mean - vector of the posterior mean of the threshold parameters
+    # gamma - gamma for Extended Bayesian Information Criterion. Recommend value of 0.25
+    # rule - "and" or "or". Interaction parameter will be estimated twice. If "and", both need to be not zero
+    # for the value to be nonzero. If "or" only one needs to be zero for parameters to be estimated as zero
+  
+  # Outputs
+    # A list of the estimated thresholds and interaction terms
+  
+  # Initialize outputs
+  final_inters <- matrix(0, nrow = nrow(post_inter_mean), ncol = ncol(post_inter_mean))
+  final_threshs <- rep(0, length(post_thresh_mean))
+  
+  
+  for (j in 1:length(post_thresh_mean)){
+    
+    
+    predictors <- Ising_data[, -j]
+    response <- Ising_data[, j]
+    
+    thresh_mean <- post_thresh_mean[j]
+    inter_mean <- post_inter_mean[j, ][-j]
+    
+    # Calculated weights for weighted logistic regression
+    get_weights <- apply(predictors, 1, function(x) get_post_lr_probs(x, thresh_mean, inter_mean))
+    
+    
+    # Use glmnet for various logistic regression estimates with l1 penatly
+    predictions_for_lr <- c(rep(1, nrow(predictors)), rep(0, nrow(predictors)))
+    
+    new_weights <- c(get_weights, 1 - get_weights)
+    
+    new_predictors <- rbind(predictors, predictors)
+    
+    log_path_beta <- glmnet(new_predictors, predictions_for_lr, family = "binomial",
+                            weights = new_weights, intercept = TRUE)
+    
+    # Calculate Extended Bayesian Information Criterion
+    thresh_mean_path <- log_path_beta$a0
+    inter_mean_path <- as.matrix(log_path_beta$beta)
+    
+    theta_mult_ni <- predictors %*% inter_mean_path
+    theta_mult_ni_plus_thresh <- log(1 + exp(t(t(theta_mult_ni) + thresh_mean_path)))
+    
+    thresh_times_x <- sapply(thresh_mean_path, function(x) x * response )
+    
+    
+    new_predictors <- apply(predictors, 2, function(x) x * response )
+    
+    theta_mult_i <- new_predictors %*% inter_mean_path
+    theta_mult_i_plus_thresh <- theta_mult_i + thresh_times_x
+    
+    
+    final_log_likelihood <- -2 * colSums(theta_mult_i_plus_thresh - theta_mult_ni_plus_thresh)
+    
+    num_neighbors <- apply(inter_mean_path, 2, function(x) sum(x != 0))
+    
+    complex_penalty <- num_neighbors * log(nrow(predictors)) + (2 * gamma * log(ncol(predictors)) & num_neighbors)
+    
+    ebic <- final_log_likelihood + complex_penalty
+    
+    # Return the best model
+    best_model <- as.numeric(which.min(ebic))
+    
+    best_inters <- inter_mean_path[, best_model]
+    best_thresh <- thresh_mean_path[best_model]
+    
+    final_threshs[j] <- best_thresh
+    
+    final_inters[j, -j] <- best_inters
+    
+  }
+  
+  # return best estimats based on "and" or "or" rule
+  
+  interactions_upper <- t(final_inters)[lower.tri(t(final_inters))]
+  interactions_lower <- final_inters[lower.tri(final_inters)]
+  
+  rule_inters <- c()
+  
+  if (rule == "and"){
+    
+    for (k in 1:length(interactions_upper)){
+    
+      if (interactions_upper[k] != 0 & interactions_lower[k] != 0){
+        
+        rule_inters <- c(rule_inters, (interactions_upper[k] + interactions_lower[k])/2)
+      }
+      
+      else{
+        
+        rule_inters <- c(rule_inters, 0)
+      }
+     }
+  }
+  
+  if (rule == "or"){
+    
+    for (k in 1:length(interactions_upper)){
+    
+      if (interactions_upper[k] == 0 & interactions_lower[k] == 0){
+        
+        rule_inters <- c(rule_inters, 0)
+        
+      }
+      
+      else{
+        
+        rule_inters <- c(rule_inters, (interactions_upper[k] + interactions_lower[k])/2)
+        
+      }
+     }
+    
+  }
+ 
+  
+  final_interactions <- vec_to_sym_matrix(rule_inters)
+  
+  
+  return(list(interactions = final_interactions, thresholds = final_threshs))
+  
+}
+
+
+```
+
+
+
+```{r}
+ty1 <- get_ising_model(Ising_6, post_inter_mean, post_thresh_mean, gamma = 0.25, rule = "and")
+```
+
+```{r}
+qgraph(ty1$interactions)
+```
+
+```{r}
+ty2 <- get_ising_model(Ising_20, post_inter_mean_2, post_thresh_mean_2, gamma = 0.25, rule = "and")
+```
+
+```{r}
+qgraph(ty2$interactions)
+
+```
+`
+
+
