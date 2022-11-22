@@ -1,5 +1,5 @@
 # Bayesian_Ising_Model_Selection
-R Code for posterior selection framework for the Bayesian Ising Model for multidimensional binary data. All code is available in the .Rmd file.
+The Ising Model, although having its roots in physics, is a convenient way to model multidimensional binary data. However, when performing Bayesian inference, it can be difficult to conclude which parameters are noninformative. The goal of this project was to propose a posterior summarization framework for the Bayesian Ising model, with a focus on identifying and removing spurious correlations within the model. All code is available in the .Rmd file. See paper for detailed mathematical overview of algorithm.
 <br>
 <br>
 To see examples from paper, make sure to run simulation data in the beginning of .Rmd.
